@@ -1,0 +1,26 @@
+{
+  "name": "gemini-3-swarm-nexus",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "node_modules/.bin/vite build",
+    "preview": "vite preview",
+    "server": "node server.cjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.30.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
