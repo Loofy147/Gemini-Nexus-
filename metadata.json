@@ -1,0 +1,5 @@
+{
+  "name": "Gemini 3 Swarm Nexus",
+  "description": "A production-ready multi-agent swarm engine powered by Gemini 3 Pro Preview. Orchestrates specialized AI agents to solve complex tasks through distributed reasoning and synthesis.",
+  "requestFramePermissions": []
+}
