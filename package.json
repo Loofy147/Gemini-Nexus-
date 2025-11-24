@@ -4,12 +4,17 @@
   "version": "0.0.0",
   "scripts": {
     "dev": "vite",
-    "build": "node_modules/.bin/vite build",
+    "build": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
     "preview": "vite preview",
-    "server": "node server.cjs"
+    "server": "node dist-server/server.cjs",
+    "test": "jest"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@opentelemetry/sdk-trace-node": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
@@ -17,8 +22,11 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
     "ts-node": "^10.9.2",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"

@@ -3,10 +3,10 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { AgentStatus, SwarmState, AgentTask, LogEntry, AgentContext, Playbook, ChatMessage, RightPanelTab, Lesson, Citation, PromptMutation, Vector, MerkleNode, MetricPoint } from './types';
 import { orchestrateTask, executeAgentTask, synthesizeSwarmResults, streamChatResponse, learnFromSession, clearHiveMemory, getCortexLoad } from './services/geminiService';
-import { MathKernel, IntegrityProtocol, VectorKernel, MerkleKernel } from '../common/constitution.js';
+import { MathKernel, IntegrityProtocol, VectorKernel, MerkleKernel } from './common/constitution_refactor';
 import { SwarmVisualizer, IconZap } from './components/SwarmVisualizer';
 import { AgentLog } from './components/AgentLog';
-import { PLAYBOOKS } from '../common/constants.js';
+import { PLAYBOOKS } from './common/constants';
 
 const uuid = () => Math.random().toString(36).substring(2, 9);
 
@@ -129,7 +129,6 @@ function App() {
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [strategy, setStrategy] = useState<string>("");
   const [strategyEmbedding, setStrategyEmbedding] = useState<Vector | undefined>(undefined);
-  // v8.0 Merkle Ledger State
   const [merkleLogs, setMerkleLogs] = useState<MerkleNode[]>([]);
 
   const [finalOutput, setFinalOutput] = useState<string | null>(null);
@@ -151,24 +150,18 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const MAX_CONCURRENT_AGENTS = 3;
 
-  const addLog = useCallback(async (source: string, message: string, type: LogEntry['type'] = 'info') => {
-    const entry: LogEntry = { id: uuid(), timestamp: Date.now(), source, message, type };
-    return entry;
-  }, []);
-
-  // Merkle Log Processor
   const latestHashRef = useRef("0000000000000000000000000000000000000000000000000000000000000000");
 
-  const processLog = async (source: string, message: string, type: LogEntry['type'] = 'info') => {
-      const entry: LogEntry = { id: uuid(), timestamp: Date.now(), source, message, type };
-      const prevHash = latestHashRef.current;
-      const contentToHash = prevHash + JSON.stringify(entry);
-      const hash = await MerkleKernel.digest(contentToHash);
-      latestHashRef.current = hash;
+  const addLog = useCallback(async (source: string, message: string, type: LogEntry['type'] = 'info') => {
+    const entry: LogEntry = { id: uuid(), timestamp: Date.now(), source, message, type };
+    const prevHash = latestHashRef.current;
+    const contentToHash = prevHash + JSON.stringify(entry);
+    const hash = await MerkleKernel.digest(contentToHash);
+    latestHashRef.current = hash;
 
-      const node: MerkleNode = { hash, prevHash, entry };
-      setMerkleLogs(prev => [...prev, node]);
-  };
+    const node: MerkleNode = { hash, prevHash, entry };
+    setMerkleLogs(prev => [...prev, node]);
+  }, []);
 
   const speak = useCallback((text: string) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
@@ -194,14 +187,14 @@ function App() {
        setTasks(prev => prev.map(t => {
          if (t.status === AgentStatus.WORKING && t.lastHeartbeat && (now - t.lastHeartbeat > 45000)) {
             // Force Stalled Agent to Self-Heal
-            processLog('WATCHDOG', `Agent ${t.role} stalled. Forcing Self-Healing protocol.`, 'warning');
+            addLog('WATCHDOG', `Agent ${t.role} stalled. Forcing Self-Healing protocol.`, 'warning');
             return { ...t, status: AgentStatus.HEALING, critique: "Process Stalled (Watchdog Intervention). Restarting.", retryCount: t.retryCount + 1, lastHeartbeat: now };
          }
          return t;
        }));
     }, 5000);
     return () => clearInterval(interval);
-  }, [tasks]);
+  }, [tasks, addLog]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -210,7 +203,7 @@ function App() {
       reader.onloadend = () => {
         const base64String = reader.result as string;
         setSelectedImage(base64String);
-        processLog('SYSTEM', 'Ocular Uplink Established: Image loaded.', 'success');
+        addLog('SYSTEM', 'Ocular Uplink Established: Image loaded.', 'success');
         speak("Visual input received.");
       };
       reader.readAsDataURL(file);
@@ -247,10 +240,10 @@ function App() {
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: retryCount > 0 ? AgentStatus.HEALING : AgentStatus.WORKING, lastHeartbeat: Date.now() } : t));
 
     if (retryCount > 0) {
-       processLog(task.role, `Reflexion Protocol Active (Attempt ${retryCount+1}). Critique: ${critique.slice(0, 50)}...`, 'healing');
+       addLog(task.role, `Reflexion Protocol Active (Attempt ${retryCount+1}). Critique: ${critique.slice(0, 50)}...`, 'healing');
     } else {
-       if (!forceApproval) processLog(task.role, `Deploying agent...`, 'info');
-       else processLog(task.role, `Resuming with Neural Handshake Authorization...`, 'success');
+       if (!forceApproval) addLog(task.role, `Deploying agent...`, 'info');
+       else addLog(task.role, `Resuming with Neural Handshake Authorization...`, 'success');
     }
 
     const completedTasks = tasks.filter(t => t.status === AgentStatus.COMPLETED && t.result);
@@ -279,7 +272,7 @@ function App() {
         retryCount,
         critique,
         (msg, type) => {
-            processLog(task.role, msg, type);
+            addLog(task.role, msg, type);
             // Update heartbeat on log activity to prevent Watchdog kill
             setTasks(prev => prev.map(t => t.id === task.id ? { ...t, lastHeartbeat: Date.now() } : t));
         },
@@ -296,14 +289,14 @@ function App() {
       const executionTime = Date.now() - startTime;
 
       if (verification && !verification.passed) {
-         processLog(task.role, `Verification Failed: ${verification.critique}`, 'warning');
+         addLog(task.role, `Verification Failed: ${verification.critique}`, 'warning');
          if (verification.alignmentScore !== undefined && verification.alignmentScore < 0.7) {
-            processLog(task.role, `Semantic Drift Detected: Alignment Score ${verification.alignmentScore.toFixed(2)}`, 'error');
+            addLog(task.role, `Semantic Drift Detected: Alignment Score ${verification.alignmentScore.toFixed(2)}`, 'error');
          }
 
          if (retryCount >= 3) {
              // Circuit Breaker
-             processLog(task.role, "Circuit Breaker Tripped: Max retries exceeded.", 'error');
+             addLog(task.role, "Circuit Breaker Tripped: Max retries exceeded.", 'error');
              setTasks(prev => prev.map(t => t.id === task.id ? {
                 ...t,
                 status: AgentStatus.FAILED,
@@ -330,7 +323,7 @@ function App() {
 
       // Watchtower Audit Log
       if (watchtower && !watchtower.passed) {
-          processLog('WATCHTOWER', `Output Rejected: ${watchtower.violations.join('; ')}`, 'error');
+          addLog('WATCHTOWER', `Output Rejected: ${watchtower.violations.join('; ')}`, 'error');
       }
 
       setTasks(prev => prev.map(t => {
@@ -377,14 +370,14 @@ function App() {
       }));
 
       if (retryCount > 0) {
-         processLog(task.role, `Self-Healing Complete.`, 'success');
+         addLog(task.role, `Self-Healing Complete.`, 'success');
       } else {
-         processLog(task.role, `Exec Success (${(executionTime/1000).toFixed(1)}s) [${model.includes('flash') ? '⚡FLASH' : '🧠PRO'}]`, 'success');
+         addLog(task.role, `Exec Success (${(executionTime/1000).toFixed(1)}s) [${model.includes('flash') ? '⚡FLASH' : '🧠PRO'}]`, 'success');
       }
 
     } catch (err) {
       console.error(err);
-      processLog(task.role, `Failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
+      addLog(task.role, `Failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: AgentStatus.FAILED, lastHeartbeat: undefined } : t));
     }
   };
@@ -394,10 +387,10 @@ function App() {
       if (!task) return;
 
       if (action === 'abort') {
-          processLog('SYSTEM', `Task ${taskId} aborted by user.`, 'error');
+          addLog('SYSTEM', `Task ${taskId} aborted by user.`, 'error');
           setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: AgentStatus.FAILED, result: "Aborted by User via Neural Handshake." } : t));
       } else if (action === 'resume') {
-          processLog('SYSTEM', `Task ${taskId} authorized. Resuming execution.`, 'success');
+          addLog('SYSTEM', `Task ${taskId} authorized. Resuming execution.`, 'success');
           runAgent(task, task.retryCount, task.critique || "", true); // forceApproval = true
       }
       // Edit logic would require a modal, skipping for brevity in this iteration
@@ -405,7 +398,7 @@ function App() {
 
   const finishExecution = async () => {
     setSwarmState(SwarmState.SYNTHESIZING);
-    processLog('SYSTEM', 'All agents finished. Synthesizing final report...', 'info');
+    addLog('SYSTEM', 'All agents finished. Synthesizing final report...', 'info');
     speak("Agents regrouping. Synthesizing final intelligence.");
     setLastActiveTimestamp(Date.now());
 
@@ -419,24 +412,24 @@ function App() {
       setHistory(prev => `${prev}\n\n[Session ${new Date().toISOString()}]\nUser: ${prompt}\nSwarm: ${masterResponse}\n`);
 
       // Recursive Learning (Prompt Mutation)
-      processLog('SYSTEM', 'Consolidating Mission Memory & Evolution...', 'info');
+      addLog('SYSTEM', 'Consolidating Mission Memory & Evolution...', 'info');
       const { lesson, mutation } = await learnFromSession(prompt, masterResponse);
 
       if (lesson) {
          setLessons(prev => [...prev, lesson]);
-         processLog('SYSTEM', `Long-Term Memory Updated: "${lesson.insight}"`, 'success');
+         addLog('SYSTEM', `Long-Term Memory Updated: "${lesson.insight}"`, 'success');
       }
       if (mutation) {
          setMutations(prev => [...prev, mutation]);
-         processLog('SYSTEM', `🧬 System Instruction Mutated based on output drift. Score Improvement: +${mutation.scoreImprovement}`, 'success');
+         addLog('SYSTEM', `🧬 System Instruction Mutated based on output drift. Score Improvement: +${mutation.scoreImprovement}`, 'success');
       }
 
       setSwarmState(SwarmState.COMPLETED);
-      processLog('SYSTEM', 'Swarm Operation Complete.', 'success');
+      addLog('SYSTEM', 'Swarm Operation Complete.', 'success');
       speak("Mission complete. Output ready.");
     } catch (err) {
       setSwarmState(SwarmState.ERROR);
-      processLog('SYSTEM', `Synthesis failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
+      addLog('SYSTEM', `Synthesis failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
       speak("System error during synthesis.");
     }
   };
@@ -446,10 +439,10 @@ function App() {
     const isFirstRun = lastActiveTimestamp === 0;
 
     if (swarmState === SwarmState.COMPLETED) {
-       processLog('SYSTEM', 'Continuing session with new directive...', 'info');
+       addLog('SYSTEM', 'Continuing session with new directive...', 'info');
     } else {
        setHistory("");
-       processLog('SYSTEM', 'Initializing Swarm Nexus v5.0...', 'info');
+       addLog('SYSTEM', 'Initializing Swarm Nexus v5.0...', 'info');
        speak("Nexus online. Analyzing directive.");
        clearHiveMemory(); // v6.1: Start fresh for vector hive
     }
@@ -465,7 +458,7 @@ function App() {
     setActiveTab('logs');
 
     try {
-      processLog('ORCHESTRATOR', `Decomposing with Playbook: ${selectedPlaybook.name}...`);
+      addLog('ORCHESTRATOR', `Decomposing with Playbook: ${selectedPlaybook.name}...`);
       const visualData = selectedImage ? selectedImage.split(',')[1] : undefined;
 
       const plan = await orchestrateTask(
@@ -475,12 +468,12 @@ function App() {
         visualData,
         lastActiveTimestamp,
         lessons,
-        (msg, type) => processLog('ORCHESTRATOR', msg, type)
+        (msg, type) => addLog('ORCHESTRATOR', msg, type)
       );
 
       setStrategy(plan.strategyDescription);
       setStrategyEmbedding(plan.strategyEmbedding); // Store strategy vector
-      processLog('ORCHESTRATOR', `Strategy: ${plan.strategyDescription}`, 'success');
+      addLog('ORCHESTRATOR', `Strategy: ${plan.strategyDescription}`, 'success');
       speak("Strategy formulated. Deploying swarm agents.");
 
       const newTasks: AgentTask[] = plan.tasks.map(agent => {
@@ -509,12 +502,12 @@ function App() {
 
       setTasks(newTasks);
       setSwarmState(SwarmState.EXECUTING);
-      processLog('SYSTEM', `Queued ${newTasks.length} agents (DAG Enabled).`, 'warning');
+      addLog('SYSTEM', `Queued ${newTasks.length} agents (DAG Enabled).`, 'warning');
       if (isFirstRun) setLastActiveTimestamp(Date.now());
 
     } catch (error) {
       setSwarmState(SwarmState.ERROR);
-      processLog('SYSTEM', `Orchestration failed: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
+      addLog('SYSTEM', `Orchestration failed: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
       speak("Orchestration failed.");
     }
   };
