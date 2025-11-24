@@ -1,12 +1,12 @@
 
-const { Type } = require("@google/genai");
+import { Type } from "@google/genai";
 
-const MODEL_ORCHESTRATOR = 'gemini-3-pro-preview';
-const MODEL_WORKER_PRO = 'gemini-3-pro-preview';
-const MODEL_WORKER_FLASH = 'gemini-2.5-flash';
-const MODEL_SYNTHESIZER = 'gemini-3-pro-preview';
+export const MODEL_ORCHESTRATOR = 'gemini-3-pro-preview';
+export const MODEL_WORKER_PRO = 'gemini-3-pro-preview';
+export const MODEL_WORKER_FLASH = 'gemini-2.5-flash';
+export const MODEL_SYNTHESIZER = 'gemini-3-pro-preview';
 
-const SYSTEM_INSTRUCTION_ORCHESTRATOR = `
+export const SYSTEM_INSTRUCTION_ORCHESTRATOR = `
 You are the **OrchestratorAI**, an autonomous orchestration engine powered by Gemini 3.
 Your goal is to decompose a user request into a robust, dependency-aware workflow (DAG) following the **Progressive Chain-of-Thought Execution** model.
 
@@ -35,7 +35,7 @@ CRITICAL INSTRUCTIONS:
 Return a JSON object with the strategy and list of agents.
 `;
 
-const SYSTEM_INSTRUCTION_SYNTHESIZER = `
+export const SYSTEM_INSTRUCTION_SYNTHESIZER = `
 You are the Swarm Synthesizer. You receive reports from specialized agents.
 Your job is Phase 4: **Final Assembly and Output Integration**.
 
@@ -46,7 +46,7 @@ Your job is Phase 4: **Final Assembly and Output Integration**.
 5. Do not explicitly mention "Agent 1", just present the information professionally.
 `;
 
-const ORCHESTRATOR_SCHEMA = {
+export const ORCHESTRATOR_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     strategy: { type: Type.STRING, description: "High-level execution plan summary." },
@@ -77,7 +77,7 @@ const ORCHESTRATOR_SCHEMA = {
   required: ["strategy", "agents"]
 };
 
-const PLAYBOOKS = [
+export const PLAYBOOKS = [
   {
     id: 'auto',
     name: 'Auto-Pilot',
@@ -107,14 +107,3 @@ const PLAYBOOKS = [
     instruction: 'Create a plan with 2 RESEARCH agents looking at different aspects (Discover Phase), followed by 1 ANALYSIS agent to compare findings and Synthesize.'
   }
 ];
-
-module.exports = {
-    MODEL_ORCHESTRATOR,
-    MODEL_WORKER_PRO,
-    MODEL_WORKER_FLASH,
-    MODEL_SYNTHESIZER,
-    SYSTEM_INSTRUCTION_ORCHESTRATOR,
-    SYSTEM_INSTRUCTION_SYNTHESIZER,
-    ORCHESTRATOR_SCHEMA,
-    PLAYBOOKS
-};

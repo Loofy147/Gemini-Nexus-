@@ -8,28 +8,34 @@ import {
   SwarmPlan,
   AgentStatus
 } from "../types";
+import { AgentEventBus } from '../architecture/eventBus';
+import CircuitBreaker from '../resilience/circuitBreaker';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const eventBus = new AgentEventBus();
+const circuitBreaker = new CircuitBreaker();
 
 async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delay = 2000): Promise<any> {
-  try {
-    const response = await fetch(url, options);
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.message}`);
-    }
-    return await response.json();
-  } catch (error: any) {
-    console.warn("API Error:", error);
-    const isRetryable = error.message.includes('503') || error.message.includes('429');
+  return circuitBreaker.execute(async () => {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: response.statusText }));
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.message}`);
+      }
+      return await response.json();
+    } catch (error: any) {
+      console.warn("API Error:", error);
+      const isRetryable = error.message.includes('503') || error.message.includes('429');
 
-    if (retries > 0 && isRetryable) {
-      console.log(`Retrying in ${delay}ms... (${retries} left)`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return fetchWithRetry(url, options, retries - 1, delay * 2);
+      if (retries > 0 && isRetryable) {
+        console.log(`Retrying in ${delay}ms... (${retries} left)`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return fetchWithRetry(url, options, retries - 1, delay * 2);
+      }
+      throw error;
     }
-    throw error;
-  }
+  });
 }
 
 export const orchestrateTask = async (
@@ -91,6 +97,7 @@ export const executeAgentTask = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task, context, retryCount, previousCritique })
     });
+    eventBus.publish({ type: 'TASK_COMPLETED', source: task.id, payload: response, timestamp: Date.now() });
     return response;
 };
 

@@ -12,7 +12,7 @@ const {
     ORCHESTRATOR_SCHEMA,
     SYSTEM_INSTRUCTION_SYNTHESIZER
 } = require('./common/constants.js');
-const { MathKernel, PRIME_DIRECTIVES, GOVERNANCE_PROTOCOLS, IRONCLAD_PROTOCOLS } = require('./common/constitution.js');
+const { MathKernel, PRIME_DIRECTIVES, GOVERNANCE_PROTOCOLS, IRONCLAD_PROTOCOLS } = require('./common/constitution_refactor.js');
 
 dotenv.config();
 
