@@ -1,11 +1,10 @@
 
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { AgentStatus, SwarmState, AgentTask, LogEntry, AgentContext, Playbook, ChatMessage, RightPanelTab, Lesson, Citation, PromptMutation, Vector, MerkleNode, MetricPoint } from './types';
-import { orchestrateTask, executeAgentTask, synthesizeSwarmResults, streamChatResponse, learnFromSession, clearHiveMemory, getCortexLoad } from './services/geminiService';
-import { MathKernel, IntegrityProtocol, VectorKernel, MerkleKernel } from './common/constitution_refactor';
+import { AgentStatus, SwarmState, AgentTask, LogEntry, Playbook, ChatMessage, RightPanelTab, Lesson, PromptMutation, Vector, MerkleNode, MetricPoint } from './types';
+import { MathKernel, IntegrityProtocol, MerkleKernel } from './common/constitution_refactor';
 import { SwarmVisualizer, IconZap } from './components/SwarmVisualizer';
 import { AgentLog } from './components/AgentLog';
+import { MetricsDashboard } from './components/MetricsDashboard';
 import { PLAYBOOKS } from './common/constants';
 
 const uuid = () => Math.random().toString(36).substring(2, 9);
@@ -65,20 +64,13 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
   );
 };
 
-const SystemTelemetry = ({ activeAgents, lastActiveTimestamp, lessons, systemHealth }: { activeAgents: number, lastActiveTimestamp: number, lessons: number, systemHealth: number }) => {
-  const [cpu, setCpu] = useState(12);
-  const [mem, setMem] = useState(24);
+const SystemTelemetry = ({ activeAgents, lastActiveTimestamp, lessons, systemHealth, cortexStats }: { activeAgents: number, lastActiveTimestamp: number, lessons: number, systemHealth: number, cortexStats: any }) => {
   const [plasticity, setPlasticity] = useState(1.0);
-  const [cortexLoad, setCortexLoad] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const load = activeAgents * 15;
-      setCpu(Math.min(99, Math.max(5, Math.floor(load + Math.random() * 10))));
-      setMem(Math.min(99, Math.max(15, Math.floor(20 + (activeAgents * 5) + Math.random() * 5))));
       const p = MathKernel.calculatePlasticity(lastActiveTimestamp, Date.now());
       setPlasticity(p);
-      setCortexLoad(getCortexLoad());
     }, 1000);
     return () => clearInterval(interval);
   }, [activeAgents, lastActiveTimestamp]);
@@ -91,7 +83,7 @@ const SystemTelemetry = ({ activeAgents, lastActiveTimestamp, lessons, systemHea
       </div>
       <div className="flex flex-col">
         <span className="uppercase tracking-wider opacity-50">CORTEX LOAD</span>
-        <span className={`text-lg font-bold text-nexus-purple`}>{cortexLoad} <span className="text-[8px]">RULES</span></span>
+        <span className="text-lg font-bold text-nexus-purple">{cortexStats?.totalExperiences || 0} <span className="text-[8px]">RULES</span></span>
       </div>
       <div className="flex flex-col">
         <span className="uppercase tracking-wider opacity-50">PLASTICITY (Δt)</span>
@@ -128,12 +120,10 @@ function App() {
   const [swarmState, setSwarmState] = useState<SwarmState>(SwarmState.IDLE);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [strategy, setStrategy] = useState<string>("");
-  const [strategyEmbedding, setStrategyEmbedding] = useState<Vector | undefined>(undefined);
   const [merkleLogs, setMerkleLogs] = useState<MerkleNode[]>([]);
 
   const [finalOutput, setFinalOutput] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<AgentTask | null>(null);
-  const [history, setHistory] = useState<string>("");
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [mutations, setMutations] = useState<PromptMutation[]>([]);
   const [selectedPlaybook, setSelectedPlaybook] = useState<Playbook>(PLAYBOOKS[0]);
@@ -148,7 +138,8 @@ function App() {
   const [systemHealth, setSystemHealth] = useState(100);
   const [showThoughts, setShowThoughts] = useState(false); // v8.0 Toggle
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const MAX_CONCURRENT_AGENTS = 3;
+  const [orchestratorStats, setOrchestratorStats] = useState<any>(null);
+  const [cortexStats, setCortexStats] = useState<any>(null);
 
   const latestHashRef = useRef("0000000000000000000000000000000000000000000000000000000000000000");
 
@@ -177,24 +168,13 @@ function App() {
     }
   }, [chatMessages, activeTab]);
 
-  // Integrity Watchdog: Monitors system health and stalled agents
+  // Integrity Watchdog: Monitors system health
   useEffect(() => {
     const interval = setInterval(() => {
        setSystemHealth(IntegrityProtocol.calculateSystemHealth(tasks));
-
-       // Watchdog Protocol: Detect Stalled Agents (> 45s without heartbeat update)
-       const now = Date.now();
-       setTasks(prev => prev.map(t => {
-         if (t.status === AgentStatus.WORKING && t.lastHeartbeat && (now - t.lastHeartbeat > 45000)) {
-            // Force Stalled Agent to Self-Heal
-            addLog('WATCHDOG', `Agent ${t.role} stalled. Forcing Self-Healing protocol.`, 'warning');
-            return { ...t, status: AgentStatus.HEALING, critique: "Process Stalled (Watchdog Intervention). Restarting.", retryCount: t.retryCount + 1, lastHeartbeat: now };
-         }
-         return t;
-       }));
     }, 5000);
     return () => clearInterval(interval);
-  }, [tasks, addLog]);
+  }, [tasks]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -210,247 +190,19 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (swarmState !== SwarmState.EXECUTING) return;
-
-    // Check pause state
-    const anyPaused = tasks.some(t => t.status === AgentStatus.AWAITING_INPUT);
-    if (anyPaused) return;
-
-    const activeCount = tasks.filter(t => t.status === AgentStatus.WORKING || t.status === AgentStatus.VERIFYING || t.status === AgentStatus.HEALING).length;
-    const candidates = tasks.filter(t => {
-      if (t.status !== AgentStatus.QUEUED && t.status !== AgentStatus.BLOCKED) return false;
-      const allDepsMet = t.dependencies.every(depId => {
-        const depTask = tasks.find(x => x.id === depId);
-        return depTask && depTask.status === AgentStatus.COMPLETED;
-      });
-      return allDepsMet;
-    });
-
-    if (activeCount < MAX_CONCURRENT_AGENTS && candidates.length > 0) {
-      const readyTask = candidates.find(t => t.dependencies.every(d => tasks.find(x => x.id === d)?.status === AgentStatus.COMPLETED));
-      if (readyTask) runAgent(readyTask);
-    } else if (activeCount === 0 && tasks.length > 0 && tasks.every(t => t.status === AgentStatus.COMPLETED || t.status === AgentStatus.FAILED)) {
-      finishExecution();
-    }
-  }, [tasks, swarmState]);
-
-  const runAgent = async (task: AgentTask, retryCount: number = 0, critique: string = "", forceApproval: boolean = false) => {
-    // Update state to working and set initial heartbeat
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: retryCount > 0 ? AgentStatus.HEALING : AgentStatus.WORKING, lastHeartbeat: Date.now() } : t));
-
-    if (retryCount > 0) {
-       addLog(task.role, `Reflexion Protocol Active (Attempt ${retryCount+1}). Critique: ${critique.slice(0, 50)}...`, 'healing');
-    } else {
-       if (!forceApproval) addLog(task.role, `Deploying agent...`, 'info');
-       else addLog(task.role, `Resuming with Neural Handshake Authorization...`, 'success');
-    }
-
-    const completedTasks = tasks.filter(t => t.status === AgentStatus.COMPLETED && t.result);
-    const depOutputs = completedTasks
-        .filter(t => task.dependencies.includes(t.id))
-        .map(t => ({ role: t.role, content: t.result! }));
-    const visualData = selectedImage ? selectedImage.split(',')[1] : undefined;
-
-    // V6.0: Pass Strategy Embedding for Coherence Check
-    const context: AgentContext = {
-      originalPrompt: prompt,
-      strategy: strategy,
-      strategyEmbedding: strategyEmbedding,
-      peers: tasks.map(t => ({ role: t.role, status: t.status })),
-      dependencyOutputs: depOutputs,
-      globalHistory: history,
-      visualData: visualData
-    };
-
-    const startTime = Date.now();
-
-    try {
-      const { status, output, internalMonologue, model, verification, security, watchtower, citations, appliedMetaRules, rScore, metrics: v8Metrics, simulatedExecution } = await executeAgentTask(
-        task,
-        context,
-        retryCount,
-        critique,
-        (msg, type) => {
-            addLog(task.role, msg, type);
-            // Update heartbeat on log activity to prevent Watchdog kill
-            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, lastHeartbeat: Date.now() } : t));
-        },
-        forceApproval
-      );
-
-      // V9.0: HITL PAUSE HANDLING
-      if (status === AgentStatus.AWAITING_INPUT) {
-          setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: AgentStatus.AWAITING_INPUT, lastHeartbeat: undefined } : t));
-          speak("Neural handshake required. Awaiting input.");
-          return;
-      }
-
-      const executionTime = Date.now() - startTime;
-
-      if (verification && !verification.passed) {
-         addLog(task.role, `Verification Failed: ${verification.critique}`, 'warning');
-         if (verification.alignmentScore !== undefined && verification.alignmentScore < 0.7) {
-            addLog(task.role, `Semantic Drift Detected: Alignment Score ${verification.alignmentScore.toFixed(2)}`, 'error');
-         }
-
-         if (retryCount >= 3) {
-             // Circuit Breaker
-             addLog(task.role, "Circuit Breaker Tripped: Max retries exceeded.", 'error');
-             setTasks(prev => prev.map(t => t.id === task.id ? {
-                ...t,
-                status: AgentStatus.FAILED,
-                result: `Circuit Breaker: Failed after ${retryCount} attempts. Last Error: ${verification.critique}`,
-                verificationPassed: false,
-                lastHeartbeat: undefined
-             } : t));
-             return;
-         }
-
-         setTasks(prev => prev.map(t => t.id === task.id ? {
-            ...t,
-            status: AgentStatus.VERIFYING,
-            verificationPassed: false,
-            critique: verification.critique,
-            retryCount: retryCount + 1,
-            lastHeartbeat: Date.now()
-         } : t));
-
-         // Recursive Retry with Backoff
-         setTimeout(() => runAgent(task, retryCount + 1, verification.critique, forceApproval), 1000 * (retryCount + 1));
-         return;
-      }
-
-      // Watchtower Audit Log
-      if (watchtower && !watchtower.passed) {
-          addLog('WATCHTOWER', `Output Rejected: ${watchtower.violations.join('; ')}`, 'error');
-      }
-
-      setTasks(prev => prev.map(t => {
-        if (t.id !== task.id) return t;
-
-        // Update Metrics History for Oscilloscope
-        const newMetricPoint: MetricPoint = {
-            timestamp: Date.now(),
-            aleph: v8Metrics?.singularityIndex || 0,
-            entropy: t.metrics.entropy,
-            plasticity: MathKernel.calculatePlasticity(lastActiveTimestamp, Date.now()),
-            knowledgeVelocity: v8Metrics?.knowledgeVelocity || 0
-        };
-        const updatedHistory = [...(t.metricsHistory || []), newMetricPoint];
-
-        return {
-            ...t,
-            status: AgentStatus.COMPLETED,
-            result: output,
-            internalMonologue: internalMonologue, // V8.0
-            modelUsed: model,
-            metrics: {
-            ...t.metrics,
-            computeTime: executionTime,
-            tier: model.includes('flash') ? 'FLASH' : 'PRO',
-            alignmentScore: verification?.alignmentScore, // Capture Vector Score
-            atomicAlignmentScore: verification?.atomicAlignmentScore, // v8.0
-            coherenceScore: verification?.coherenceScore, // Capture Strategy Coherence
-            rScore: rScore,
-            // v8.0 Unified Nexus Metrics
-            knowledgeVelocity: v8Metrics?.knowledgeVelocity,
-            singularityIndex: v8Metrics?.singularityIndex
-            },
-            metricsHistory: updatedHistory, // V9.0
-            verificationPassed: verification ? verification.passed : true,
-            securityAudit: security,
-            watchtowerAudit: watchtower, // v8.0
-            simulatedExecution: simulatedExecution, // v9.0
-            retryCount: retryCount,
-            citations: citations,
-            lastHeartbeat: undefined,
-            appliedMetaRules: appliedMetaRules
-        };
-      }));
-
-      if (retryCount > 0) {
-         addLog(task.role, `Self-Healing Complete.`, 'success');
-      } else {
-         addLog(task.role, `Exec Success (${(executionTime/1000).toFixed(1)}s) [${model.includes('flash') ? '⚡FLASH' : '🧠PRO'}]`, 'success');
-      }
-
-    } catch (err) {
-      console.error(err);
-      addLog(task.role, `Failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: AgentStatus.FAILED, lastHeartbeat: undefined } : t));
-    }
-  };
-
-  const handleAgentAction = (taskId: string, action: 'resume' | 'abort' | 'edit') => {
-      const task = tasks.find(t => t.id === taskId);
-      if (!task) return;
-
-      if (action === 'abort') {
-          addLog('SYSTEM', `Task ${taskId} aborted by user.`, 'error');
-          setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: AgentStatus.FAILED, result: "Aborted by User via Neural Handshake." } : t));
-      } else if (action === 'resume') {
-          addLog('SYSTEM', `Task ${taskId} authorized. Resuming execution.`, 'success');
-          runAgent(task, task.retryCount, task.critique || "", true); // forceApproval = true
-      }
-      // Edit logic would require a modal, skipping for brevity in this iteration
-  };
-
-  const finishExecution = async () => {
-    setSwarmState(SwarmState.SYNTHESIZING);
-    addLog('SYSTEM', 'All agents finished. Synthesizing final report...', 'info');
-    speak("Agents regrouping. Synthesizing final intelligence.");
-    setLastActiveTimestamp(Date.now());
-
-    try {
-      const successfulTasks = tasks.filter(t => t.status === AgentStatus.COMPLETED && t.result);
-      if (successfulTasks.length === 0) throw new Error("No successful agent reports to synthesize.");
-
-      const results = successfulTasks.map(t => ({ role: t.role, output: t.result! }));
-      const masterResponse = await synthesizeSwarmResults(prompt, results, history);
-      setFinalOutput(masterResponse);
-      setHistory(prev => `${prev}\n\n[Session ${new Date().toISOString()}]\nUser: ${prompt}\nSwarm: ${masterResponse}\n`);
-
-      // Recursive Learning (Prompt Mutation)
-      addLog('SYSTEM', 'Consolidating Mission Memory & Evolution...', 'info');
-      const { lesson, mutation } = await learnFromSession(prompt, masterResponse);
-
-      if (lesson) {
-         setLessons(prev => [...prev, lesson]);
-         addLog('SYSTEM', `Long-Term Memory Updated: "${lesson.insight}"`, 'success');
-      }
-      if (mutation) {
-         setMutations(prev => [...prev, mutation]);
-         addLog('SYSTEM', `🧬 System Instruction Mutated based on output drift. Score Improvement: +${mutation.scoreImprovement}`, 'success');
-      }
-
-      setSwarmState(SwarmState.COMPLETED);
-      addLog('SYSTEM', 'Swarm Operation Complete.', 'success');
-      speak("Mission complete. Output ready.");
-    } catch (err) {
-      setSwarmState(SwarmState.ERROR);
-      addLog('SYSTEM', `Synthesis failed: ${err instanceof Error ? err.message : 'Unknown'}`, 'error');
-      speak("System error during synthesis.");
-    }
-  };
-
   const handleIgnite = async () => {
     if (!prompt.trim()) return;
-    const isFirstRun = lastActiveTimestamp === 0;
 
     if (swarmState === SwarmState.COMPLETED) {
        addLog('SYSTEM', 'Continuing session with new directive...', 'info');
     } else {
-       setHistory("");
-       addLog('SYSTEM', 'Initializing Swarm Nexus v5.0...', 'info');
+       addLog('SYSTEM', 'Initializing Swarm Nexus...', 'info');
        speak("Nexus online. Analyzing directive.");
-       clearHiveMemory(); // v6.1: Start fresh for vector hive
     }
 
-    setSwarmState(SwarmState.ORCHESTRATING);
+    setSwarmState(SwarmState.EXECUTING);
     setTasks([]);
     setStrategy("");
-    setStrategyEmbedding(undefined);
     setFinalOutput(null);
     setMerkleLogs([]);
     latestHashRef.current = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -458,57 +210,30 @@ function App() {
     setActiveTab('logs');
 
     try {
-      addLog('ORCHESTRATOR', `Decomposing with Playbook: ${selectedPlaybook.name}...`);
-      const visualData = selectedImage ? selectedImage.split(',')[1] : undefined;
+      addLog('EXECUTOR', `Executing with prompt: "${prompt}"...`);
+      speak("Executing swarm.");
 
-      const plan = await orchestrateTask(
-        prompt,
-        history,
-        selectedPlaybook.instruction,
-        visualData,
-        lastActiveTimestamp,
-        lessons,
-        (msg, type) => addLog('ORCHESTRATOR', msg, type)
-      );
-
-      setStrategy(plan.strategyDescription);
-      setStrategyEmbedding(plan.strategyEmbedding); // Store strategy vector
-      addLog('ORCHESTRATOR', `Strategy: ${plan.strategyDescription}`, 'success');
-      speak("Strategy formulated. Deploying swarm agents.");
-
-      const newTasks: AgentTask[] = plan.tasks.map(agent => {
-        const entropy = MathKernel.calculateEntropy(agent.description, 0, !!visualData);
-        const confidence = MathKernel.calculateProjectedConfidence(entropy, agent.capability, !!visualData);
-
-        return {
-          id: agent.id,
-          role: agent.role,
-          description: agent.description,
-          capability: agent.capability,
-          requiresWebSearch: agent.requiresWebSearch,
-          status: agent.dependencies && agent.dependencies.length > 0 ? AgentStatus.BLOCKED : AgentStatus.QUEUED,
-          logs: [],
-          dependencies: agent.dependencies || [],
-          retryCount: 0,
-          metrics: {
-            entropy,
-            confidence,
-            costFunction: 0,
-            computeTime: 0,
-            visualInput: !!visualData
-          }
-        };
+      const response = await fetch('http://localhost:3001/api/swarm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt, maxAgents: 5 }),
       });
 
-      setTasks(newTasks);
-      setSwarmState(SwarmState.EXECUTING);
-      addLog('SYSTEM', `Queued ${newTasks.length} agents (DAG Enabled).`, 'warning');
-      if (isFirstRun) setLastActiveTimestamp(Date.now());
+      const { output, orchestratorStats, cortexStats } = await response.json();
+
+      setFinalOutput(output);
+      setOrchestratorStats(orchestratorStats);
+      setCortexStats(cortexStats);
+      addLog('EXECUTOR', `Execution complete.`, 'success');
+      speak("Execution complete.");
+      setSwarmState(SwarmState.COMPLETED);
 
     } catch (error) {
       setSwarmState(SwarmState.ERROR);
-      addLog('SYSTEM', `Orchestration failed: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
-      speak("Orchestration failed.");
+      addLog('SYSTEM', `Execution failed: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
+      speak("Execution failed.");
     }
   };
 
@@ -525,12 +250,29 @@ function App() {
 
     try {
       let fullResponse = "";
-      const stream = streamChatResponse(userMsg.text, chatMessages, swarmContext);
+      const stream = await fetch('http://localhost:3001/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: userMsg.text, history: chatMessages, swarmContext }),
+      });
+
+      if (!stream.body) {
+        return;
+      }
+      const reader = stream.body.getReader();
+      const decoder = new TextDecoder();
+
       const aiMsgId = Date.now();
       setChatMessages(prev => [...prev, { role: 'model', text: '', timestamp: aiMsgId }]);
 
-      for await (const chunk of stream) {
-        fullResponse += chunk;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        fullResponse += decoder.decode(value);
         setChatMessages(prev => prev.map(msg =>
           msg.timestamp === aiMsgId ? { ...msg, text: fullResponse } : msg
         ));
@@ -548,23 +290,13 @@ function App() {
       timestamp: new Date().toISOString(),
       strategy,
       output: finalOutput,
-      tasks: tasks.map(t => ({
-        role: t.role,
-        description: t.description,
-        result: t.result,
-        internalMonologue: t.internalMonologue, // V8.0 Export
-        metrics: t.metrics,
-        modelUsed: t.modelUsed,
-        security: t.securityAudit,
-        watchtower: t.watchtowerAudit, // V8.0
-        simulatedExecution: t.simulatedExecution, // V9.0
-        retries: t.retryCount,
-        citations: t.citations
-      })),
-      logs: merkleLogs.map(n => n.entry), // Flatten merkle log
-      merkleChain: merkleLogs.map(n => ({ hash: n.hash, prevHash: n.prevHash })), // Export Chain Proof
+      tasks: [],
+      logs: merkleLogs.map(n => n.entry),
+      merkleChain: merkleLogs.map(n => ({ hash: n.hash, prevHash: n.prevHash })),
       lessons,
-      mutations // Include mutations in export
+      mutations,
+      orchestratorStats,
+      cortexStats,
     };
 
     const blob = new Blob([JSON.stringify(missionData, null, 2)], { type: 'application/json' });
@@ -608,6 +340,7 @@ function App() {
                 lastActiveTimestamp={lastActiveTimestamp}
                 lessons={lessons.length}
                 systemHealth={systemHealth}
+                cortexStats={cortexStats}
              />
 
              <button
@@ -754,7 +487,7 @@ function App() {
                   swarmState={swarmState}
                   onSelectTask={(t) => { setSelectedTask(t); setActiveTab('inspector'); }}
                   selectedTaskId={selectedTask?.id}
-                  onAction={handleAgentAction} // v9.0 HITL
+                  onAction={() => {}}
                />
             </div>
           </div>
@@ -763,7 +496,7 @@ function App() {
 
         <div className="lg:col-span-4 h-full flex flex-col glass-panel rounded-2xl overflow-hidden animate-slide-up" style={{ animationDelay: '0.3s' }}>
           <div className="flex border-b border-white/5 bg-nexus-950/30">
-            {(['inspector', 'logs', 'chat'] as const).map(tab => (
+            {(['inspector', 'logs', 'chat', 'metrics'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -801,217 +534,6 @@ function App() {
                         <span className="text-[10px] text-nexus-cyan font-mono uppercase tracking-widest block mb-2 opacity-70">DIRECTIVE</span>
                         <p className="text-gray-300 text-sm leading-relaxed">{selectedTask.description}</p>
                      </div>
-
-                     {/* V7.0 META-KNOWLEDGE DISPLAY */}
-                     {selectedTask.appliedMetaRules && selectedTask.appliedMetaRules.length > 0 && (
-                        <div className="p-4 bg-purple-500/10 rounded-xl border border-purple-500/30">
-                           <span className="text-[10px] text-purple-400 font-mono uppercase tracking-widest block mb-2 opacity-70">🧠 CORTEX META-KNOWLEDGE APPLIED</span>
-                           <ul className="list-disc list-inside text-xs text-purple-200 space-y-1">
-                              {selectedTask.appliedMetaRules.map(id => (
-                                <li key={id}>Applied Meta-Rule ({id.slice(0,4)})</li>
-                              ))}
-                           </ul>
-                        </div>
-                     )}
-
-                     {/* V9.0 SIMULATION KERNEL (VIRTUAL COMPILER) */}
-                     {selectedTask.simulatedExecution && (
-                        <div className={`p-4 rounded-xl border ${selectedTask.simulatedExecution.passed ? 'bg-green-900/10 border-green-500/30' : 'bg-red-900/10 border-red-500/30'}`}>
-                           <span className={`text-[10px] font-mono uppercase tracking-widest block mb-2 opacity-70 ${selectedTask.simulatedExecution.passed ? 'text-green-400' : 'text-red-400'}`}>
-                               🖥️ VIRTUAL COMPILER SIMULATION
-                           </span>
-                           {selectedTask.simulatedExecution.passed ? (
-                               <div className="space-y-2">
-                                  <span className="text-green-400 text-xs font-bold block">COMPILE SUCCESS</span>
-                                  <div className="text-[10px] font-mono bg-black/30 p-2 rounded text-gray-400">
-                                     {selectedTask.simulatedExecution.output.slice(0, 100)}...
-                                  </div>
-                               </div>
-                           ) : (
-                               <div className="space-y-2">
-                                   <span className="text-red-400 text-xs font-bold block">RUNTIME ERROR SIMULATED</span>
-                                   <ul className="list-disc list-inside text-xs text-red-300">
-                                       {selectedTask.simulatedExecution.errors.map((v, i) => <li key={i}>{v}</li>)}
-                                   </ul>
-                               </div>
-                           )}
-                        </div>
-                     )}
-
-                     {/* V8.0 WATCHTOWER AUDIT */}
-                     {selectedTask.watchtowerAudit && (
-                        <div className={`p-4 rounded-xl border ${selectedTask.watchtowerAudit.passed ? 'bg-nexus-900/50 border-nexus-700' : 'bg-red-900/20 border-red-500/30'}`}>
-                           <span className={`text-[10px] font-mono uppercase tracking-widest block mb-2 opacity-70 ${selectedTask.watchtowerAudit.passed ? 'text-gray-400' : 'text-red-400'}`}>
-                               👁️ WATCHTOWER AUDIT
-                           </span>
-                           {selectedTask.watchtowerAudit.passed ? (
-                               <span className="text-nexus-success text-xs font-bold">ALL AXIOMS VERIFIED</span>
-                           ) : (
-                               <ul className="list-disc list-inside text-xs text-red-300">
-                                   {selectedTask.watchtowerAudit.violations.map((v, i) => <li key={i}>{v}</li>)}
-                               </ul>
-                           )}
-                        </div>
-                     )}
-
-                     {/* V6.0 ALIGNMENT MONITOR */}
-                     {selectedTask.metrics?.alignmentScore !== undefined && (
-                       <div className="p-4 bg-nexus-950/30 rounded-xl border border-white/5 space-y-4">
-                          <span className="text-[10px] text-gray-500 font-mono uppercase tracking-widest block opacity-70">SEMANTIC COHERENCE (VECTOR HIVE)</span>
-
-                          {/* Task Alignment */}
-                          <div>
-                            <div className="flex justify-between text-[10px] mb-1">
-                                <span>Global Alignment</span>
-                                <span className={selectedTask.metrics.alignmentScore > 0.8 ? 'text-nexus-success' : 'text-nexus-warning'}>{selectedTask.metrics.alignmentScore.toFixed(2)}</span>
-                            </div>
-                            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                <div
-                                    className={`h-full rounded-full transition-all duration-1000 ${
-                                    selectedTask.metrics.alignmentScore > 0.8 ? 'bg-nexus-success' : 'bg-nexus-warning'
-                                    }`}
-                                    style={{ width: `${selectedTask.metrics.alignmentScore * 100}%` }}
-                                ></div>
-                            </div>
-                          </div>
-
-                          {/* V8.0 Atomic Alignment */}
-                          {selectedTask.metrics.atomicAlignmentScore !== undefined && (
-                             <div>
-                                <div className="flex justify-between text-[10px] mb-1">
-                                    <span>Atomic Claim Alignment</span>
-                                    <span className={selectedTask.metrics.atomicAlignmentScore > 0.8 ? 'text-blue-400' : 'text-red-400'}>{selectedTask.metrics.atomicAlignmentScore.toFixed(2)}</span>
-                                </div>
-                                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                    <div
-                                        className={`h-full rounded-full transition-all duration-1000 ${
-                                        selectedTask.metrics.atomicAlignmentScore > 0.8 ? 'bg-blue-400' : 'bg-red-400'
-                                        }`}
-                                        style={{ width: `${selectedTask.metrics.atomicAlignmentScore * 100}%` }}
-                                    ></div>
-                                </div>
-                             </div>
-                          )}
-
-                          {/* Strategy Coherence (v6.1) */}
-                          {selectedTask.metrics.coherenceScore !== undefined && (
-                             <div>
-                                <div className="flex justify-between text-[10px] mb-1">
-                                    <span>Strategic Coherence</span>
-                                    <span className={selectedTask.metrics.coherenceScore > 0.75 ? 'text-nexus-purple' : 'text-nexus-error'}>{selectedTask.metrics.coherenceScore.toFixed(2)}</span>
-                                </div>
-                                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                    <div
-                                        className={`h-full rounded-full transition-all duration-1000 ${
-                                        selectedTask.metrics.coherenceScore > 0.75 ? 'bg-nexus-purple' : 'bg-nexus-error'
-                                        }`}
-                                        style={{ width: `${selectedTask.metrics.coherenceScore * 100}%` }}
-                                    ></div>
-                                </div>
-                             </div>
-                          )}
-                       </div>
-                     )}
-
-                     {selectedTask.critique && (
-                        <div className="p-4 bg-nexus-warning/10 rounded-xl border border-nexus-warning/20">
-                           <span className="text-[10px] text-nexus-warning font-mono uppercase tracking-widest block mb-2 opacity-70">⚠️ SELF-CORRECTION PROTOCOL</span>
-                           <p className="text-nexus-warning text-xs italic">"{selectedTask.critique}"</p>
-                        </div>
-                     )}
-
-                     {selectedTask.securityAudit && selectedTask.securityAudit.sanitized && (
-                        <div className="p-4 bg-red-500/10 rounded-xl border border-red-500/30 animate-pulse">
-                           <span className="text-[10px] text-red-400 font-mono uppercase tracking-widest block mb-2 opacity-70">🛡️ IRONCLAD SECURITY INTERVENTION</span>
-                           <p className="text-red-300 text-xs">Content sanitized. {selectedTask.securityAudit.originalContentLength - selectedTask.securityAudit.sanitizedContentLength} chars redacted.</p>
-                        </div>
-                     )}
-
-                     {selectedTask.citations && selectedTask.citations.length > 0 && (
-                        <div className="flex flex-wrap gap-2">
-                           {selectedTask.citations.map((cite, i) => (
-                              <a key={i} href={cite.uri} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-3 py-1.5 bg-nexus-950 border border-nexus-700 rounded-full text-[10px] text-blue-400 hover:border-blue-400 transition-all">
-                                <span className="w-1 h-1 bg-blue-500 rounded-full"></span>
-                                <span className="truncate max-w-[150px]">{cite.title}</span>
-                              </a>
-                           ))}
-                        </div>
-                     )}
-
-                     <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="bg-nexus-950/30 p-3 rounded-lg border border-white/5">
-                          <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-1">Processing Unit</span>
-                          <span className="text-nexus-purple font-mono font-bold">{selectedTask.capability}</span>
-                        </div>
-                        <div className="bg-nexus-950/30 p-3 rounded-lg border border-white/5">
-                           <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-1">Web Uplink</span>
-                           <span className={selectedTask.requiresWebSearch ? "text-blue-400 font-bold" : "text-gray-600"}>{selectedTask.requiresWebSearch ? 'ACTIVE' : 'OFFLINE'}</span>
-                        </div>
-                        <div className="col-span-2 bg-nexus-950/30 p-3 rounded-lg border border-white/5">
-                           <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-2">Math Kernel Metrics</span>
-                           <div className="space-y-2">
-                              <div className="flex justify-between">
-                                <span>Entropy</span>
-                                <span className="font-mono text-nexus-purple">{(selectedTask.metrics?.entropy || 0).toFixed(3)} Ω</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Projected Conf</span>
-                                <span className="font-mono text-nexus-cyan">{(selectedTask.metrics?.confidence || 0).toFixed(2)} P</span>
-                              </div>
-                               <div className="flex justify-between">
-                                <span>Visual Input</span>
-                                <span className={`font-mono ${selectedTask.metrics?.visualInput ? 'text-nexus-success' : 'text-gray-600'}`}>{selectedTask.metrics?.visualInput ? 'YES' : 'NO'}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Compute Time</span>
-                                <span className="font-mono text-gray-300">{(selectedTask.metrics?.computeTime || 0)}ms</span>
-                              </div>
-                              {selectedTask.metrics?.tier && (
-                                <div className="flex justify-between border-t border-white/5 pt-2 mt-2">
-                                  <span>Model Tier</span>
-                                  <span className={`font-mono font-bold ${selectedTask.metrics.tier === 'FLASH' ? 'text-yellow-400' : 'text-nexus-purple'}`}>
-                                    {selectedTask.metrics.tier === 'FLASH' ? '⚡ FLASH' : '🧠 PRO'}
-                                  </span>
-                                </div>
-                              )}
-                              {selectedTask.metrics?.rScore !== undefined && (
-                                <div className="flex justify-between border-t border-white/5 pt-2 mt-2">
-                                  <span>R-Learning Reward</span>
-                                  <span className="font-mono font-bold text-green-400">+{selectedTask.metrics.rScore.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {selectedTask.metrics?.singularityIndex !== undefined && (
-                                <div className="flex justify-between border-t border-white/5 pt-2 mt-2">
-                                  <span className="text-nexus-success uppercase">Aleph (Singularity Index)</span>
-                                  <span className="font-mono font-bold text-nexus-success">
-                                     ℵ {selectedTask.metrics.singularityIndex.toFixed(2)}
-                                  </span>
-                                </div>
-                              )}
-                           </div>
-                        </div>
-                     </div>
-
-                     {/* V8.0 INTERNAL MONOLOGUE */}
-                     {selectedTask.internalMonologue && (
-                        <div className="mt-4">
-                            <button
-                                onClick={() => setShowThoughts(!showThoughts)}
-                                className="w-full flex items-center justify-between p-3 rounded-lg border border-nexus-700 bg-nexus-950/50 hover:bg-nexus-900 transition-colors"
-                            >
-                                <span className="text-[10px] uppercase tracking-widest text-gray-400 flex items-center gap-2">
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-                                    Cognitive Ghost (Thoughts)
-                                </span>
-                                <span className="text-nexus-cyan text-xs">{showThoughts ? 'HIDE' : 'REVEAL'}</span>
-                            </button>
-                            {showThoughts && (
-                                <div className="mt-2 p-4 rounded-lg bg-[#0d1117] border border-nexus-700/50 text-gray-400 text-xs font-mono leading-relaxed whitespace-pre-wrap animate-fade-in shadow-inner">
-                                    {selectedTask.internalMonologue}
-                                </div>
-                            )}
-                        </div>
-                     )}
 
                      {selectedTask.result && (
                        <div>
@@ -1094,6 +616,11 @@ function App() {
               </div>
             )}
 
+            {activeTab === 'metrics' && (
+              <div className="h-full overflow-y-auto custom-scrollbar p-6">
+                <MetricsDashboard orchestratorStats={orchestratorStats} cortexStats={cortexStats} circuitBreakerState="CLOSED" />
+              </div>
+            )}
           </div>
         </div>
 
