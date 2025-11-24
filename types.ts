@@ -230,4 +230,4 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export type RightPanelTab = 'inspector' | 'logs' | 'chat';
+export type RightPanelTab = 'inspector' | 'logs' | 'chat' | 'metrics';
