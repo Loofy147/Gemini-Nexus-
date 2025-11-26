@@ -12,9 +12,9 @@ import { DynamicOrchestrator } from './services/dynamicOrchestrator';
 import { AgentCoordinationService } from './services/eventDrivenArchitecture';
 import { EvaluationOrchestrator } from './services/evaluationSuite';
 import { AdaptiveCortex } from './services/adaptiveCortex';
-import { SwarmExecutor } from './services/swarmExecutor';
 import { AgentCapability } from './types';
 import { GoogleGenerativeAI } from '@google/genai';
+import { SwarmExecutor } from './services/swarmExecutor';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -314,12 +314,16 @@ const orchestrator = new DynamicOrchestrator();
 const coordination = new AgentCoordinationService();
 const evaluator = new EvaluationOrchestrator();
 const cortex = new AdaptiveCortex();
-const swarmExecutor = new SwarmExecutor();
+const swarmExecutor = new SwarmExecutor(cortex);
 const circuitBreaker = new CircuitBreaker(5, 60000);
 const rateLimiter = new TokenBucket(100, 2); // 100 capacity, 2 tokens/sec
 
 app.post('/api/swarm', async (req: Request, res: Response, next: NextFunction) => {
   const { prompt, maxAgents } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
   try {
     const result = await swarmExecutor.execute(prompt, maxAgents);
     res.json(result);

@@ -56,6 +56,9 @@ interface Experience {
   // Metadata
   timestamp: number;
   taskId: string;
+
+  // v11.0 Adaptive Spectral Regularization
+  repetitionScore: number;
 }
 
 interface LearningMetrics {
@@ -77,6 +80,7 @@ export class AdaptiveCortex {
   private maxBufferSize = 1000;
   private updateFrequency = 100; // Update every N experiences
   private learningRate = 0.05;
+  private repetitionHistory: Map<AgentCapability, string[]> = new Map();
 
   constructor(initialWeights?: Partial<CortexWeights>) {
     this.weights = this.initializeWeights(initialWeights);
@@ -150,8 +154,16 @@ export class AdaptiveCortex {
   createExperience(
     task: AgentTask,
     predicted: { budget: number; success: number },
-    actual: { budget: number; success: boolean; quality: number; latency: number }
+    actual: {
+      budget: number;
+      success: boolean;
+      quality: number;
+      latency: number;
+      output: string;
+    }
   ): Experience {
+    const repetitionScore = this.calculateRepetition(task.capability, actual.output);
+
     return {
       taskEntropy: task.metrics.entropy,
       capability: task.capability,
@@ -165,7 +177,8 @@ export class AdaptiveCortex {
       actualQuality: actual.quality,
       actualLatency: actual.latency,
       timestamp: Date.now(),
-      taskId: task.id
+      taskId: task.id,
+      repetitionScore
     };
   }
 
@@ -190,7 +203,10 @@ export class AdaptiveCortex {
     // 3. Optimize routing preferences
     this.optimizeRoutingPreferences();
 
-    // 4. Update metadata
+    // 4. v11.0: Optimize temperature for spectral regularization
+    this.optimizeTemperatureSettings();
+
+    // 5. Update metadata
     this.weights.lastUpdated = Date.now();
     this.weights.updateCount++;
     this.weights.confidence = Math.min(
@@ -299,6 +315,35 @@ export class AdaptiveCortex {
         0.5,
         3.0
       );
+    });
+  }
+
+  /**
+   * Adjusts temperature based on output repetitiveness.
+   */
+  private optimizeTemperatureSettings(): void {
+    const byCapability = new Map<AgentCapability, Experience[]>();
+     this.experienceBuffer.forEach(exp => {
+      if (!byCapability.has(exp.capability)) {
+        byCapability.set(exp.capability, []);
+      }
+      byCapability.get(exp.capability)!.push(exp);
+    });
+
+    byCapability.forEach((experiences, capability) => {
+        const avgRepetition = experiences.reduce((sum, e) => sum + e.repetitionScore, 0) / experiences.length;
+        const currentTemp = this.weights.temperatureSettings[capability];
+        const REPETITION_THRESHOLD = 0.4;
+        const DIVERSITY_THRESHOLD = 0.1;
+
+        // If repetition is high, increase temperature to encourage diversity
+        if (avgRepetition > REPETITION_THRESHOLD) {
+            this.weights.temperatureSettings[capability] = this.clamp(currentTemp + 0.1, 0.1, 1.0);
+        }
+        // If repetition is low, decrease temperature for more focused output
+        else if (avgRepetition < DIVERSITY_THRESHOLD) {
+            this.weights.temperatureSettings[capability] = this.clamp(currentTemp - 0.1, 0.1, 1.0);
+        }
     });
   }
 
@@ -477,6 +522,37 @@ export class AdaptiveCortex {
 
   private clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
+  }
+
+  private calculateRepetition(capability: AgentCapability, output: string): number {
+    const history = this.repetitionHistory.get(capability) || [];
+    if (history.length === 0) {
+      this.repetitionHistory.set(capability, [output]);
+      return 0;
+    }
+
+    // Using a simple Jaccard similarity for demonstration
+    const currentTokens = new Set(output.trim().split(/\s+/));
+    let maxSimilarity = 0;
+
+    for (const pastOutput of history) {
+      const pastTokens = new Set(pastOutput.trim().split(/\s+/));
+      const intersection = new Set([...currentTokens].filter(x => pastTokens.has(x)));
+      const union = new Set([...currentTokens, ...pastTokens]);
+      const similarity = intersection.size / union.size;
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
+      }
+    }
+
+    // Update history (keep last 5 outputs)
+    history.push(output);
+    if (history.length > 5) {
+      history.shift();
+    }
+    this.repetitionHistory.set(capability, history);
+
+    return maxSimilarity; // Higher score = more repetitive
   }
 
   private getMaxBuffer(capability: AgentCapability): number {
