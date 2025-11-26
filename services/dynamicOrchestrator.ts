@@ -6,6 +6,7 @@
  */
 
 import { AgentTask, AgentCapability, AgentContext } from '../types';
+import { MathKernel } from '../common/constitution_refactor';
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -206,7 +207,19 @@ export class DynamicOrchestrator {
     }));
 
     // Select best utility
-    const best = scores.reduce((a, b) => a.utility > b.utility ? a : b);
+    let best = scores.reduce((a, b) => a.utility > b.utility ? a : b);
+
+    // Dynamic Coordinate Bias
+    const { bias, strength } = MathKernel.calculateCoordinateBias(context.entropy, best.capability);
+    let reasoning = `Exploitation: ${best.capability} has high utility.`;
+    const BIAS_STRENGTH_THRESHOLD = 0.5;
+
+    if (bias && strength > BIAS_STRENGTH_THRESHOLD) {
+        const originalCapability = best.capability;
+        best.capability = bias;
+        reasoning += ` | Coordinate Bias Shifted: ${originalCapability} -> ${bias} (Strength: ${strength.toFixed(2)}) due to high input entropy.`;
+    }
+
 
     const perf = this.routingHistory.get(best.capability)!;
 
@@ -215,7 +228,7 @@ export class DynamicOrchestrator {
       role: this.generateRoleName(best.capability, context),
       confidence: perf.successRate,
       estimatedCost: this.estimateCost(best.capability, context),
-      reasoning: `Exploitation: ${best.capability} has ${(perf.successRate * 100).toFixed(1)}% success rate`
+      reasoning: reasoning
     };
   }
 

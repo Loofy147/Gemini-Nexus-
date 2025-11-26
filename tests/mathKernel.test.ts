@@ -36,4 +36,24 @@ describe('MathKernel', () => {
         expect(budget).toBe(25700);
     });
   });
+
+  describe('calculateCoordinateBias', () => {
+    it('should not apply bias for low entropy', () => {
+      const bias = MathKernel.calculateCoordinateBias(0.5, AgentCapability.CREATIVE);
+      expect(bias.bias).toBeNull();
+      expect(bias.strength).toBe(0);
+    });
+
+    it('should shift CREATIVE to ANALYSIS for high entropy', () => {
+      const bias = MathKernel.calculateCoordinateBias(0.8, AgentCapability.CREATIVE);
+      expect(bias.bias).toBe(AgentCapability.ANALYSIS);
+      expect(bias.strength).toBeCloseTo(0.64);
+    });
+
+    it('should shift ANALYSIS to CREATIVE for very high entropy', () => {
+        const bias = MathKernel.calculateCoordinateBias(0.9, AgentCapability.ANALYSIS);
+        expect(bias.bias).toBe(AgentCapability.CREATIVE);
+        expect(bias.strength).toBeCloseTo(0.405);
+    });
+  });
 });
