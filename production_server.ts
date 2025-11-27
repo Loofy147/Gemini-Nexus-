@@ -8,13 +8,13 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
-import { DynamicOrchestrator } from './services/dynamicOrchestrator';
+import { GraphOrchestrator } from './services/graphOrchestrator';
 import { AgentCoordinationService } from './services/eventDrivenArchitecture';
 import { EvaluationOrchestrator } from './services/evaluationSuite';
 import { AdaptiveCortex } from './services/adaptiveCortex';
-import { SwarmExecutor } from './services/swarmExecutor';
 import { AgentCapability } from './types';
 import { GoogleGenerativeAI } from '@google/genai';
+import { SwarmExecutor } from './services/swarmExecutor';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -310,16 +310,20 @@ app.use(requestContextMiddleware);
 
 // Initialize services
 const logger = new StructuredLogger();
-const orchestrator = new DynamicOrchestrator();
+const orchestrator = new GraphOrchestrator();
 const coordination = new AgentCoordinationService();
 const evaluator = new EvaluationOrchestrator();
 const cortex = new AdaptiveCortex();
-const swarmExecutor = new SwarmExecutor();
+const swarmExecutor = new SwarmExecutor(cortex);
 const circuitBreaker = new CircuitBreaker(5, 60000);
 const rateLimiter = new TokenBucket(100, 2); // 100 capacity, 2 tokens/sec
 
 app.post('/api/swarm', async (req: Request, res: Response, next: NextFunction) => {
   const { prompt, maxAgents } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
   try {
     const result = await swarmExecutor.execute(prompt, maxAgents);
     res.json(result);
@@ -430,23 +434,14 @@ app.post('/api/orchestrate', async (req: Request, res: Response, next: NextFunct
 
     // Execute with circuit breaker
     const result = await circuitBreaker.execute(async () => {
-      // Use dynamic orchestrator
+      // Use graph orchestrator
       const plan = await orchestrator.planExecution(
-        validatedInput.userPrompt,
-        5, // Max agents
-        100000 // Token budget
+        validatedInput.userPrompt
       );
 
       return {
-        strategy: `Dynamic plan with ${plan.stages.length} stages`,
-        agents: plan.stages.map(stage => ({
-          id: `agent_${stage.stageId}`,
-          role: stage.agent.role,
-          task: `Execute ${stage.agent.capability} capability`,
-          capability: stage.agent.capability,
-          requiresWebSearch: false,
-          dependencies: stage.dependencies
-        }))
+        strategy: `Graph-based execution with ${plan.tasks.length} initial tasks`,
+        tasks: plan.tasks,
       };
     });
 
