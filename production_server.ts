@@ -8,7 +8,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
-import { DynamicOrchestrator } from './services/dynamicOrchestrator';
+import { GraphOrchestrator } from './services/graphOrchestrator';
 import { AgentCoordinationService } from './services/eventDrivenArchitecture';
 import { EvaluationOrchestrator } from './services/evaluationSuite';
 import { AdaptiveCortex } from './services/adaptiveCortex';
@@ -310,7 +310,7 @@ app.use(requestContextMiddleware);
 
 // Initialize services
 const logger = new StructuredLogger();
-const orchestrator = new DynamicOrchestrator();
+const orchestrator = new GraphOrchestrator();
 const coordination = new AgentCoordinationService();
 const evaluator = new EvaluationOrchestrator();
 const cortex = new AdaptiveCortex();
@@ -434,23 +434,14 @@ app.post('/api/orchestrate', async (req: Request, res: Response, next: NextFunct
 
     // Execute with circuit breaker
     const result = await circuitBreaker.execute(async () => {
-      // Use dynamic orchestrator
+      // Use graph orchestrator
       const plan = await orchestrator.planExecution(
-        validatedInput.userPrompt,
-        5, // Max agents
-        100000 // Token budget
+        validatedInput.userPrompt
       );
 
       return {
-        strategy: `Dynamic plan with ${plan.stages.length} stages`,
-        agents: plan.stages.map(stage => ({
-          id: `agent_${stage.stageId}`,
-          role: stage.agent.role,
-          task: `Execute ${stage.agent.capability} capability`,
-          capability: stage.agent.capability,
-          requiresWebSearch: false,
-          dependencies: stage.dependencies
-        }))
+        strategy: `Graph-based execution with ${plan.tasks.length} initial tasks`,
+        tasks: plan.tasks,
       };
     });
 
