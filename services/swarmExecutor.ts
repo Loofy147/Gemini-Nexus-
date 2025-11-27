@@ -118,6 +118,7 @@ export class SwarmExecutor {
       return {
         synthesis: "Synthesized result: The agent outputs were too similar. Re-evaluating with a focus on diverse perspectives.",
         diversityScore,
+        finalOutput: "",
         results: completedTasks,
       }
     }
